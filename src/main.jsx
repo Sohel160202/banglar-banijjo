@@ -103,22 +103,10 @@ function App() {
       return;
     }
     setRoomBusy(true);
-    setRoomMessage("খেলার ঘর খোঁজা হচ্ছে…");
-    const { data: room, error } = await supabase.from("game_rooms").select("id, room_code, max_players").eq("room_code", cleanCode).eq("status", "waiting").single();
-    if (error || !room) {
-      setRoomMessage("এই কোডে কোনো খোলা ঘর পাওয়া যায়নি।");
-      setRoomBusy(false);
-      return;
-    }
-    const { count } = await supabase.from("game_players").select("id", { count: "exact", head: true }).eq("room_id", room.id);
-    if ((count || 0) >= room.max_players) {
-      setRoomMessage("এই ঘরটি ইতিমধ্যে পূর্ণ।");
-      setRoomBusy(false);
-      return;
-    }
-    const displayName = session.user.email?.split("@")[0] || "খেলোয়াড়";
-    const { error: joinError } = await supabase.from("game_players").insert({ room_id: room.id, user_id: session.user.id, seat: count || 0, display_name: displayName });
-    setRoomMessage(joinError ? "ঘরে যোগ দেওয়া যায়নি।" : "আপনি খেলার ঘরে যোগ দিয়েছেন।");
+    setRoomMessage("খেলার ঘরে যোগ দেওয়া হচ্ছে…");
+    const { data, error } = await supabase.rpc("join_room_by_code", { p_code: cleanCode });
+    const result = data?.[0];
+    setRoomMessage(error ? "ঘরে যোগ দেওয়া যায়নি।" : (result?.message || "ঘরে যোগ দেওয়া যায়নি।"));
     setRoomBusy(false);
   };
 

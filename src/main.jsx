@@ -12,6 +12,21 @@ const spaces = [
   { name: "খুলনা", type: "শিল্প ও নদীবন্দর", value: "৳ ৫৮,০০০", tone: "teal" }
 ];
 
+const boardSpaces = [
+  { name: "শুরু", type: "বিশেষ", tone: "start" },
+  { name: "ঢাকা", type: "প্রধান শহর", tone: "green" },
+  { name: "বাজার সংবাদ", type: "ঘটনা", tone: "event" },
+  { name: "বিদ্যুৎ বাংলা", type: "সেবা", tone: "blue" },
+  { name: "চট্টগ্রাম", type: "বন্দর", tone: "blue" },
+  { name: "বন্দর কর", type: "কর", tone: "tax" },
+  { name: "সিলেট", type: "চা ও প্রবাসী আয়", tone: "violet" },
+  { name: "রাজশাহী", type: "কৃষি ও শিক্ষা", tone: "coral" },
+  { name: "নতুন সেতু", type: "পরিবহন", tone: "teal" },
+  { name: "কক্সবাজার", type: "পর্যটন", tone: "amber" },
+  { name: "পানি উন্নয়ন", type: "সেবা", tone: "blue" },
+  { name: "খুলনা", type: "শিল্প ও নদীবন্দর", tone: "teal" }
+];
+
 const events = [
   { icon: "৳", title: "রমজানের বাজার", detail: "খাদ্য ও খুচরা ব্যবসায় আয় ২০% বৃদ্ধি", color: "gold" },
   { icon: "↗", title: "নতুন সেতু নির্মাণ", detail: "সংযুক্ত এলাকার জমির মূল্য বাড়বে", color: "blue" },
@@ -35,6 +50,12 @@ function App() {
   const [lobbyPlayers, setLobbyPlayers] = useState([]);
   const [showLobby, setShowLobby] = useState(false);
   const [lobbyMessage, setLobbyMessage] = useState("");
+  const [gameRoom, setGameRoom] = useState(null);
+  const [gamePlayers, setGamePlayers] = useState([]);
+  const [showGame, setShowGame] = useState(false);
+  const [gameMessage, setGameMessage] = useState("");
+  const [lastRoll, setLastRoll] = useState(null);
+  const [rolling, setRolling] = useState(false);
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -67,17 +88,32 @@ function App() {
 
   useEffect(() => {
     if (!supabase || !currentRoom?.id) return undefined;
-    const refreshLobby = async () => {
-      const { data } = await supabase.from("game_players").select("id, user_id, seat, display_name, is_ready").eq("room_id", currentRoom.id).order("seat");
-      setLobbyPlayers(data || []);
+    const refreshRoom = async () => {
+      const [{ data: room }, { data: players }] = await Promise.all([
+        supabase.from("game_rooms").select("id, room_code, status, host_id, current_turn, round_number, state").eq("id", currentRoom.id).single(),
+        supabase.from("game_players").select("id, user_id, seat, display_name, is_ready, cash, position, net_worth").eq("room_id", currentRoom.id).order("seat")
+      ]);
+      if (room) {
+        setGameRoom(room);
+        if (room.status === "active") {
+          setShowGame(true);
+          setShowLobby(false);
+        }
+      }
+      setLobbyPlayers(players || []);
+      setGamePlayers(players || []);
     };
-    refreshLobby();
-    const channel = supabase.channel(`room-${currentRoom.id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "game_players", filter: `room_id=eq.${currentRoom.id}` }, refreshLobby)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "game_rooms", filter: `id=eq.${currentRoom.id}` }, (payload) => {
+    refreshRoom();
+    const channel = supabase.channel("room-" + currentRoom.id)
+      .on("postgres_changes", { event: "*", schema: "public", table: "game_players", filter: "room_id=eq." + currentRoom.id }, refreshRoom)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "game_rooms", filter: "id=eq." + currentRoom.id }, (payload) => {
+        setGameRoom(payload.new);
         if (payload.new.status === "active") {
           setLobbyMessage("খেলা শুরু হয়েছে—বোর্ড প্রস্তুত করা হচ্ছে।");
+          setShowLobby(false);
+          setShowGame(true);
         }
+        if (payload.new.state?.last_roll) setLastRoll(payload.new.state.last_roll);
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };
@@ -153,7 +189,26 @@ function App() {
     if (!supabase || !session || !currentRoom) return;
     setLobbyMessage("খেলা শুরু করা হচ্ছে…");
     const { error } = await supabase.from("game_rooms").update({ status: "active" }).eq("id", currentRoom.id).eq("host_id", session.user.id);
-    setLobbyMessage(error ? "শুধু ঘরের মালিক খেলা শুরু করতে পারবেন।" : "খেলা শুরু হয়েছে—বোর্ড প্রস্তুত করা হচ্ছে।");
+    if (error) {
+      setLobbyMessage("শুধু ঘরের মালিক খেলা শুরু করতে পারবেন।");
+      return;
+    }
+    setLobbyMessage("খেলা শুরু হয়েছে—বোর্ড প্রস্তুত করা হচ্ছে।");
+  };
+
+  const rollDice = async () => {
+    if (!supabase || !currentRoom || rolling) return;
+    setRolling(true);
+    setGameMessage("পাশা গড়ানো হচ্ছে…");
+    const { data, error } = await supabase.rpc("roll_dice", { p_room_id: currentRoom.id });
+    const result = data?.[0];
+    if (error || !result?.total) {
+      setGameMessage(error ? "চাল দেওয়া যায়নি।" : (result?.message || "এখন চাল দেওয়া যাবে না।"));
+    } else {
+      setLastRoll(result);
+      setGameMessage(result.message);
+    }
+    setRolling(false);
   };
 
   return (
@@ -250,6 +305,7 @@ function App() {
       {showAuth && <div className="modal-backdrop" onClick={() => setShowAuth(false)}><div className="room-modal auth-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowAuth(false)}>×</button><span className="section-kicker">খেলোয়াড়ের প্রবেশ</span><h2>{authMode === "signin" ? "আপনার বাণিজ্যিক যাত্রা চালু করুন" : "নতুন খেলোয়াড় তৈরি করুন"}</h2><p>আপনার খেলার ঘর ও অগ্রগতি নিরাপদে সংরক্ষণ করতে প্রবেশ করুন।</p><form onSubmit={handleAuth} className="auth-form"><label>ইমেইল<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="আপনার ইমেইল" required /></label><label>পাসওয়ার্ড<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="কমপক্ষে ৬ অক্ষর" minLength="6" required /></label><button className="primary-button full-width" type="submit">{authMode === "signin" ? "প্রবেশ করুন" : "অ্যাকাউন্ট তৈরি করুন"}</button></form>{authMessage && <div className="auth-message">{authMessage}</div>}<button className="switch-auth" onClick={() => { setAuthMode(authMode === "signin" ? "signup" : "signin"); setAuthMessage(""); }}>{authMode === "signin" ? "নতুন অ্যাকাউন্ট তৈরি করুন" : "আগের অ্যাকাউন্টে প্রবেশ করুন"}</button></div></div>}
       {notice && <button className="toast" onClick={() => setNotice("")}>{notice}<span>×</span></button>}
       {showRoom && <div className="modal-backdrop" onClick={() => setShowRoom(false)}><div className="room-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowRoom(false)}>×</button><span className="section-kicker">নতুন খেলা</span><h2>আপনার বাণিজ্যিক যাত্রা শুরু করুন</h2><p>আপনি ঘর তৈরি করলে অন্য খেলোয়াড়রা একটি কোড ব্যবহার করে যোগ দিতে পারবে।</p><div className="room-preview"><span>প্রথম সংস্করণ</span><strong>বাংলাদেশের মানচিত্র</strong><small>২–৬ জন খেলোয়াড় • ব্যক্তিগত ঘর</small></div>{roomMessage && <div className="auth-message">{roomMessage}</div>}<button className="primary-button full-width" disabled={roomBusy} onClick={createRoom}>{roomBusy ? "তৈরি হচ্ছে…" : "খেলার ঘর তৈরি করুন"}</button></div></div>}
+      {showGame && <div className="game-screen"><div className="game-topbar"><div><span className="section-kicker">বাংলাদেশের মানচিত্র • প্রথম সংস্করণ</span><h2>খেলার মাঠ</h2></div><div className="game-top-actions"><span>রাউন্ড {gameRoom?.round_number || 1}</span><button onClick={() => setShowGame(false)}>অপেক্ষাকক্ষে ফিরুন</button></div></div><div className="game-layout"><div className="live-board">{boardSpaces.map((space, index) => <div className={"live-space " + space.tone} key={space.name}><span className="live-space-number">{index + 1}</span><strong>{space.name}</strong><small>{space.type}</small><div className="tokens">{gamePlayers.filter((player) => player.position === index).map((player) => <span key={player.id} title={player.display_name}>{player.display_name?.[0] || "খ"}</span>)}</div></div>)}<div className="live-board-center"><span>বাংলার</span><strong>বাণিজ্য</strong><small>সিদ্ধান্তই শক্তি</small></div></div><aside className="game-sidebar"><div className="turn-card"><span className="section-kicker">বর্তমান চাল</span><h3>{gamePlayers.find((player) => player.seat === gameRoom?.current_turn)?.display_name || "খেলোয়াড়"}</h3><p>{gamePlayers.find((player) => player.seat === gameRoom?.current_turn)?.user_id === session?.user?.id ? "এখন আপনার পালা" : "অন্য খেলোয়াড় চাল দিচ্ছেন"}</p><button className="primary-button full-width" disabled={gamePlayers.find((player) => player.seat === gameRoom?.current_turn)?.user_id !== session?.user?.id || rolling} onClick={rollDice}>{rolling ? "পাশা গড়ানো হচ্ছে…" : "পাশা গড়ান"}</button></div><div className="roll-card"><span className="section-kicker">শেষ চাল</span>{lastRoll ? <><div className="dice-result"><b>{lastRoll.die_one}</b><b>{lastRoll.die_two}</b><strong>= {lastRoll.total}</strong></div><p>{gameMessage || lastRoll.message}</p></> : <p>খেলা শুরু হলে প্রথম চাল এখানে দেখা যাবে।</p>}</div><div className="player-list-card"><span className="section-kicker">খেলোয়াড়েরা</span>{gamePlayers.map((player) => <div className={"game-player-row " + (player.seat === gameRoom?.current_turn ? "active-turn" : "")} key={player.id}><span className="lobby-avatar">{player.display_name?.[0] || "খ"}</span><div><strong>{player.display_name}</strong><small>অবস্থান {player.position + 1}</small></div><b>৳ {Number(player.cash || 0).toLocaleString("bn-BD")}</b></div>)}</div></aside></div></div>}
       {showLobby && <div className="modal-backdrop" onClick={() => setShowLobby(false)}><div className="room-modal lobby-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowLobby(false)}>×</button><span className="section-kicker">খেলার অপেক্ষাকক্ষ</span><h2>বন্ধুদের সঙ্গে যোগ দিন</h2><p>এই কোডটি বন্ধুদের পাঠান। সবাই প্রস্তুত হলে ঘরের মালিক খেলা শুরু করতে পারবেন।</p><div className="room-code-card"><span>ঘরের কোড</span><strong>{currentRoom?.room_code || "------"}</strong><button onClick={() => navigator.clipboard?.writeText(currentRoom?.room_code || "")}>কপি করুন</button></div><div className="lobby-list">{lobbyPlayers.map((player, index) => <div className="lobby-player" key={player.id}><span className="lobby-avatar">{player.display_name?.[0] || "খ"}</span><div><strong>{player.display_name}</strong><small>{index === 0 ? "ঘরের মালিক" : `খেলোয়াড় ${index + 1}`}</small></div><span className={`ready-state ${player.is_ready ? "ready" : ""}`}>{player.is_ready ? "প্রস্তুত" : "অপেক্ষায়"}</span></div>)}</div>{lobbyMessage && <div className="auth-message">{lobbyMessage}</div>}<div className="lobby-actions"><button className="secondary-button" onClick={toggleReady}>{lobbyPlayers.find((player) => player.user_id === session?.user?.id)?.is_ready ? "প্রস্তুতি বাতিল করুন" : "আমি প্রস্তুত"}</button>{lobbyPlayers[0]?.user_id === session?.user?.id && <button className="primary-button" onClick={startGame}>খেলা শুরু করুন</button>}</div></div></div>}
       {showJoin && <div className="modal-backdrop" onClick={() => setShowJoin(false)}><div className="room-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowJoin(false)}>×</button><span className="section-kicker">খেলায় যোগ দিন</span><h2>ঘরের কোড লিখুন</h2><p>আপনার বন্ধুর দেওয়া ছয় অক্ষরের কোড ব্যবহার করে খেলার ঘরে প্রবেশ করুন।</p><form className="auth-form" onSubmit={joinRoom}><label>ঘরের কোড<input value={roomCode} onChange={(event) => setRoomCode(event.target.value.toUpperCase())} placeholder="যেমন: AB12CD" maxLength="6" required /></label><button className="primary-button full-width" disabled={roomBusy} type="submit">{roomBusy ? "খোঁজা হচ্ছে…" : "ঘরে যোগ দিন"}</button></form>{roomMessage && <div className="auth-message">{roomMessage}</div>}</div></div>}
     </main>

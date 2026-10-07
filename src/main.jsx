@@ -114,6 +114,7 @@ function App() {
           setShowGame(true);
         }
         if (payload.new.state?.last_roll) setLastRoll(payload.new.state.last_roll);
+        setPendingPurchase(payload.new.state?.pending_purchase || null);
       })
       .subscribe();
     return () => { supabase.removeChannel(channel); };

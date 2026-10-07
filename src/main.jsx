@@ -1,6 +1,7 @@
-import { StrictMode, useState } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { supabase } from "./lib/supabase.js";
 
 const spaces = [
   { name: "ঢাকা", type: "প্রধান শহর", value: "৳ ১,২০,০০০", tone: "green" },
@@ -20,8 +21,48 @@ const events = [
 function App() {
   const [notice, setNotice] = useState("");
   const [showRoom, setShowRoom] = useState(false);
+  const [showAuth, setShowAuth] = useState(false);
+  const [session, setSession] = useState(null);
+  const [authMode, setAuthMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+
+  useEffect(() => {
+    if (!supabase) return undefined;
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const handleAuth = async (event) => {
+    event.preventDefault();
+    if (!supabase) {
+      setAuthMessage("প্রবেশ ব্যবস্থা সংযোগ করা হচ্ছে।");
+      return;
+    }
+    setAuthMessage("অনুগ্রহ করে অপেক্ষা করুন…");
+    const result = authMode === "signin"
+      ? await supabase.auth.signInWithPassword({ email, password })
+      : await supabase.auth.signUp({ email, password });
+    if (result.error) setAuthMessage(result.error.message);
+    else {
+      setAuthMessage(authMode === "signin" ? "সফলভাবে প্রবেশ করেছেন।" : "ইমেইলে নিশ্চিতকরণ বার্তা পাঠানো হয়েছে।");
+      if (authMode === "signin") setShowAuth(false);
+    }
+  };
+
+  const signOut = async () => {
+    await supabase?.auth.signOut();
+    setNotice("আপনি বের হয়ে গেছেন");
+  };
 
   const openRoom = () => {
+    if (!session) {
+      setShowAuth(true);
+      setNotice("খেলা শুরু করতে আগে প্রবেশ করুন");
+      return;
+    }
     setShowRoom(true);
     setNotice("নতুন খেলার ঘর তৈরির প্রস্তুতি চলছে");
   };
@@ -38,9 +79,9 @@ function App() {
         </div>
         <div className="top-actions">
           <button className="quiet-button" onClick={() => setNotice("নিয়মাবলি শিগগিরই প্রকাশিত হবে")}>নিয়মাবলি</button>
-          <button className="profile-button" onClick={() => setNotice("অতিথি খেলোয়াড় হিসেবে চালু আছে")}>
-            <span className="avatar">অ</span>
-            <span>অতিথি খেলোয়াড়</span>
+          <button className="profile-button" onClick={() => session ? signOut() : setShowAuth(true)}>
+            <span className="avatar">{session ? "আ" : "অ"}</span>
+            <span>{session ? "বের হয়ে যান" : "প্রবেশ করুন"}</span>
             <span className="chevron">⌄</span>
           </button>
         </div>
@@ -117,6 +158,7 @@ function App() {
 
       <footer><span>বাংলার বাণিজ্য</span><span>বাংলার শহর, আপনার সিদ্ধান্ত</span><span>© ২০২৬</span></footer>
 
+      {showAuth && <div className="modal-backdrop" onClick={() => setShowAuth(false)}><div className="room-modal auth-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowAuth(false)}>×</button><span className="section-kicker">খেলোয়াড়ের প্রবেশ</span><h2>{authMode === "signin" ? "আপনার বাণিজ্যিক যাত্রা চালু করুন" : "নতুন খেলোয়াড় তৈরি করুন"}</h2><p>আপনার খেলার ঘর ও অগ্রগতি নিরাপদে সংরক্ষণ করতে প্রবেশ করুন।</p><form onSubmit={handleAuth} className="auth-form"><label>ইমেইল<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="আপনার ইমেইল" required /></label><label>পাসওয়ার্ড<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="কমপক্ষে ৬ অক্ষর" minLength="6" required /></label><button className="primary-button full-width" type="submit">{authMode === "signin" ? "প্রবেশ করুন" : "অ্যাকাউন্ট তৈরি করুন"}</button></form>{authMessage && <div className="auth-message">{authMessage}</div>}<button className="switch-auth" onClick={() => { setAuthMode(authMode === "signin" ? "signup" : "signin"); setAuthMessage(""); }}>{authMode === "signin" ? "নতুন অ্যাকাউন্ট তৈরি করুন" : "আগের অ্যাকাউন্টে প্রবেশ করুন"}</button></div></div>}
       {notice && <button className="toast" onClick={() => setNotice("")}>{notice}<span>×</span></button>}
       {showRoom && <div className="modal-backdrop" onClick={() => setShowRoom(false)}><div className="room-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setShowRoom(false)}>×</button><span className="section-kicker">নতুন খেলা</span><h2>আপনার বাণিজ্যিক যাত্রা শুরু করুন</h2><p>খেলার ঘর, খেলোয়াড় এবং প্রথম বোর্ডের নিয়মগুলো খুব শিগগিরই এখানে চালু হবে।</p><div className="room-preview"><span>প্রথম সংস্করণ</span><strong>বাংলাদেশের মানচিত্র</strong><small>২–৬ জন খেলোয়াড়</small></div><button className="primary-button full-width" onClick={() => { setShowRoom(false); setNotice("খেলার ঘর তৈরি হলে আপনাকে জানানো হবে"); }}>প্রস্তুত হলে জানাবেন</button></div></div>}
     </main>
